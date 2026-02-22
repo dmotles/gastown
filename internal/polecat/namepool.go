@@ -223,8 +223,8 @@ type namePoolState struct {
 // Only runtime state (OverflowNext, MaxSize) is saved - configuration like
 // Theme and CustomNames come from settings/config.json and are not persisted here.
 func (p *NamePool) Save() error {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	dir := filepath.Dir(p.stateFile)
 	if err := os.MkdirAll(dir, 0755); err != nil {
