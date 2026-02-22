@@ -419,7 +419,7 @@ var expectedBeadsNewCounts = map[string]int{
 	"crew_add.go":                  1,
 	"dnd.go":                       1,
 	"dog.go":                       3,
-	"done.go":                      10,
+	"done.go":                      9,
 	"escalate_impl.go":             6,
 	"feed.go":                      1,
 	"hook.go":                      3,

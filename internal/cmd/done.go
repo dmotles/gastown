@@ -15,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mail"
@@ -842,44 +841,8 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	}
 
 notifyWitness:
-	// Branch-per-polecat: merge polecat's Dolt branch to main.
-	// This makes all beads changes (MR bead, issue updates) visible on main
-	// before the refinery or witness try to read them.
-	var mergeFailed bool
-
-	// Resume: skip Dolt merge if already completed (gt-aufru checkpoint)
-	if checkpoints[CheckpointDoltMerged] != "" {
-		fmt.Printf("%s Dolt branch already merged (resumed from checkpoint)\n", style.Bold.Render("✓"))
-		goto afterDoltMerge
-	}
-
-	if bdBranch := os.Getenv("BD_BRANCH"); bdBranch != "" {
-		fmt.Printf("Merging Dolt branch %s to main...\n", bdBranch)
-		if err := doltserver.MergePolecatBranch(townRoot, rigName, bdBranch); err != nil {
-			mergeFailed = true
-			style.PrintWarning("could not merge Dolt branch: %v (data still on branch %s)", err, bdBranch)
-		} else {
-			fmt.Printf("%s Dolt branch merged to main\n", style.Bold.Render("✓"))
-		}
-		// Unset BD_BRANCH so subsequent bd operations (updateAgentStateOnDone)
-		// write directly to main instead of the now-deleted branch.
-		// Note: this is a lifecycle transition (branch deleted). The systematic fix
-		// for BD_BRANCH leaking into read operations is in beads.go (OnMain/StripBdBranch).
-		os.Unsetenv("BD_BRANCH")
-	}
-
-	// Write Dolt merge checkpoint for resume (gt-aufru)
-	if agentBeadID != "" {
-		cpBd := beads.New(beads.ResolveBeadsDir(cwd))
-		writeDoneCheckpoint(cpBd, agentBeadID, CheckpointDoltMerged, "ok")
-	}
-
-afterDoltMerge:
-	// Nudge refinery AFTER the Dolt merge so MR bead is visible on main.
-	// Skip nudge only if merge was attempted and failed — MR bead is stranded
-	// on the polecat branch and refinery won't find it on main.
-	// If no branch existed (crew worker), MR bead is already on main.
-	if mrID != "" && !mergeFailed {
+	// Nudge refinery so it processes the MR bead (already on main).
+	if mrID != "" {
 		nudgeRefinery(rigName, "MERGE_READY received - check inbox for pending work")
 	}
 
@@ -1391,22 +1354,10 @@ func isPolecatActor(actor string) bool {
 	return len(parts) >= 2 && parts[1] == "polecats"
 }
 
-// onMainBranch temporarily clears BD_BRANCH so beads operations target
-// Dolt's main branch instead of the polecat's working branch.
-// Returns a restore function that must be called after the operation.
-//
-// Use this for operations that need to read/write beads visible to all agents
-// (e.g., source issue lookup, MR bead creation) rather than the polecat's
-// isolated Dolt branch.
-func onMainBranch() func() {
-	saved := os.Getenv("BD_BRANCH")
-	os.Unsetenv("BD_BRANCH")
-	return func() {
-		if saved != "" {
-			os.Setenv("BD_BRANCH", saved)
-		}
-	}
-}
+
+// onMainBranch is a no-op retained for call-site compatibility.
+// BD_BRANCH is no longer set (branch-per-polecat removed); all agents use main.
+func onMainBranch() func() { return func() {} }
 
 // selfKillSession terminates the polecat's own tmux session after logging the event.
 // This completes the self-cleaning model: "done means gone" - both worktree and session.
