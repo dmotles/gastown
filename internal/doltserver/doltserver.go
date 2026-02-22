@@ -2601,131 +2601,6 @@ func doltSQLScriptWithRetry(townRoot, script string) error {
 	return fmt.Errorf("after %d retries: %w", maxRetries, lastErr)
 }
 
-// OrphanedDoltBranch represents a Dolt branch that is not associated with any active polecat.
-type OrphanedDoltBranch struct {
-	Database string // The Dolt database name (e.g., "gastown")
-	Branch   string // The branch name (e.g., "polecat-valkyrie-1707648000")
-	HasDiff  bool   // Whether the branch has changes relative to main
-}
-
-// ListDoltBranches returns all branch names in a Dolt database.
-// Queries the dolt_branches system table.
-func ListDoltBranches(townRoot, rigDB string) ([]string, error) {
-	query := fmt.Sprintf("USE %s; SELECT name FROM dolt_branches", rigDB)
-	config := DefaultConfig(townRoot)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	cmd := buildDoltSQLCmd(ctx, config, "-r", "csv", "-q", query)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("listing branches in %s: %w (%s)", rigDB, err, strings.TrimSpace(string(output)))
-	}
-
-	var branches []string
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || line == "name" {
-			continue // skip empty lines and CSV header
-		}
-		branches = append(branches, line)
-	}
-	return branches, nil
-}
-
-// DoltBranchHasDiff returns true if branchName has any committed changes
-// relative to the main branch in the given database.
-func DoltBranchHasDiff(townRoot, rigDB, branchName string) (bool, error) {
-	if err := validateBranchName(branchName); err != nil {
-		return false, err
-	}
-	escaped := strings.ReplaceAll(branchName, "'", "''")
-	query := fmt.Sprintf("USE %s; SELECT COUNT(*) AS cnt FROM dolt_diff('main', '%s')", rigDB, escaped)
-	config := DefaultConfig(townRoot)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	cmd := buildDoltSQLCmd(ctx, config, "-r", "csv", "-q", query)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		// If diff query fails (e.g., table schema mismatch), treat as having diff
-		// to be safe and avoid data loss.
-		return true, nil
-	}
-
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || line == "cnt" {
-			continue
-		}
-		count, err := strconv.Atoi(line)
-		if err != nil {
-			return true, nil // Be conservative
-		}
-		return count > 0, nil
-	}
-	return false, nil
-}
-
-// FindOrphanedDoltBranches scans all Dolt databases for polecat branches
-// that are no longer associated with any active polecat. These branches are
-// left behind when polecat sessions crash before MergePolecatBranch runs.
-func FindOrphanedDoltBranches(townRoot string) ([]OrphanedDoltBranch, error) {
-	databases, err := ListDatabases(townRoot)
-	if err != nil {
-		return nil, fmt.Errorf("listing databases: %w", err)
-	}
-
-	var orphans []OrphanedDoltBranch
-	for _, db := range databases {
-		branches, err := ListDoltBranches(townRoot, db)
-		if err != nil {
-			// Skip databases we can't query (may not be running)
-			continue
-		}
-
-		for _, branch := range branches {
-			if branch == "main" {
-				continue
-			}
-			// Only flag polecat-* branches as orphans.
-			// Other branches may be intentional.
-			if !strings.HasPrefix(branch, "polecat-") {
-				continue
-			}
-
-			hasDiff, _ := DoltBranchHasDiff(townRoot, db, branch)
-			orphans = append(orphans, OrphanedDoltBranch{
-				Database: db,
-				Branch:   branch,
-				HasDiff:  hasDiff,
-			})
-		}
-	}
-
-	return orphans, nil
-}
-
-// CleanupOrphanedDoltBranches merges (if needed) and deletes orphaned polecat
-// branches across all Dolt databases. Returns the count of branches cleaned up.
-func CleanupOrphanedDoltBranches(townRoot string, orphans []OrphanedDoltBranch) (merged, deleted int, errs []error) {
-	for _, o := range orphans {
-		if o.HasDiff {
-			// Merge to main before deleting to preserve any data
-			if err := MergePolecatBranch(townRoot, o.Database, o.Branch); err != nil {
-				errs = append(errs, fmt.Errorf("merge %s in %s: %w", o.Branch, o.Database, err))
-				continue
-			}
-			merged++
-		} else {
-			// No diff — safe to just delete
-			DeletePolecatBranch(townRoot, o.Database, o.Branch)
-			deleted++
-		}
-	}
-	return merged, deleted, errs
-}
-
 // DeletePolecatBranch deletes a polecat's Dolt branch (cleanup/nuke).
 // Best-effort: silently ignores "branch not found", warns on other failures.
 func DeletePolecatBranch(townRoot, rigDB, branchName string) {
@@ -2741,4 +2616,178 @@ func DeletePolecatBranch(townRoot, rigDB, branchName string) {
 		}
 		style.PrintWarning("could not delete Dolt branch %s: %v", branchName, err)
 	}
+}
+
+// OrphanedDoltBranch describes a Dolt branch that is no longer associated with
+// an active polecat session. These accumulate when sessions crash before the
+// merge step in gt done.
+type OrphanedDoltBranch struct {
+	Database string // e.g., "gastown"
+	Branch   string // e.g., "polecat-valkyrie-1707648000"
+	HasDiff  bool   // true if the branch has unmerged changes vs main
+}
+
+// ListDoltBranches returns all branch names for a given database via the dolt_branches
+// system table. Requires the Dolt server to be running.
+func ListDoltBranches(townRoot, rigDB string) ([]string, error) {
+	config := DefaultConfig(townRoot)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	query := fmt.Sprintf("USE %s; SELECT name FROM dolt_branches", rigDB)
+	cmd := buildDoltSQLCmd(ctx, config, "-r", "json", "-q", query)
+
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("listing branches in %s: %w (stderr: %s)",
+			rigDB, err, strings.TrimSpace(stderrBuf.String()))
+	}
+
+	return parseBranchNames(output)
+}
+
+// parseBranchNames extracts branch names from dolt sql JSON output.
+// Dolt returns {"rows": [{"name": "main"}, {"name": "polecat-foo-123"}]}
+func parseBranchNames(output []byte) ([]string, error) {
+	var result struct {
+		Rows []struct {
+			Name string `json:"name"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		return nil, fmt.Errorf("parsing branch list JSON: %w (raw: %s)", err, string(output))
+	}
+
+	var branches []string
+	for _, row := range result.Rows {
+		if row.Name != "" {
+			branches = append(branches, row.Name)
+		}
+	}
+	return branches, nil
+}
+
+// DoltBranchHasDiff returns true if the named branch has any changes relative to main.
+// Uses DOLT_DIFF to check for schema or data differences.
+func DoltBranchHasDiff(townRoot, rigDB, branchName string) (bool, error) {
+	if err := validateBranchName(branchName); err != nil {
+		return false, err
+	}
+
+	config := DefaultConfig(townRoot)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// HASHOF returns the commit hash; if they differ, the branch has diverged.
+	escaped := strings.ReplaceAll(branchName, "'", "''")
+	query := fmt.Sprintf(
+		"USE %s; SELECT HASHOF('main') != HASHOF('%s') AS has_diff",
+		rigDB, escaped,
+	)
+	cmd := buildDoltSQLCmd(ctx, config, "-r", "json", "-q", query)
+
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+	output, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("checking diff for %s in %s: %w (stderr: %s)",
+			branchName, rigDB, err, strings.TrimSpace(stderrBuf.String()))
+	}
+
+	var result struct {
+		Rows []struct {
+			HasDiff interface{} `json:"has_diff"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		return false, fmt.Errorf("parsing diff result: %w", err)
+	}
+
+	if len(result.Rows) == 0 {
+		return false, nil
+	}
+
+	// Dolt returns booleans as various types depending on version (int, bool, string).
+	switch v := result.Rows[0].HasDiff.(type) {
+	case bool:
+		return v, nil
+	case float64:
+		return v != 0, nil
+	case string:
+		return v == "1" || strings.EqualFold(v, "true"), nil
+	default:
+		return false, nil
+	}
+}
+
+// polecatBranchPrefix is the prefix for all polecat Dolt branches.
+const polecatBranchPrefix = "polecat-"
+
+// FindOrphanedDoltBranches scans all rig databases for polecat-* branches
+// that are no longer associated with active sessions.
+func FindOrphanedDoltBranches(townRoot string) ([]OrphanedDoltBranch, error) {
+	databases, err := ListDatabases(townRoot)
+	if err != nil {
+		return nil, fmt.Errorf("listing databases: %w", err)
+	}
+
+	var orphans []OrphanedDoltBranch
+	for _, db := range databases {
+		branches, err := ListDoltBranches(townRoot, db)
+		if err != nil {
+			// Skip databases we can't query (may be corrupted or not served).
+			continue
+		}
+
+		for _, branch := range branches {
+			if branch == "main" {
+				continue
+			}
+			if !strings.HasPrefix(branch, polecatBranchPrefix) {
+				continue
+			}
+
+			hasDiff, diffErr := DoltBranchHasDiff(townRoot, db, branch)
+			if diffErr != nil {
+				// Can't determine diff state; include it with HasDiff=false
+				// so it gets deleted (not merged) — safe because if we can't
+				// check, the branch is likely corrupted anyway.
+				hasDiff = false
+			}
+
+			orphans = append(orphans, OrphanedDoltBranch{
+				Database: db,
+				Branch:   branch,
+				HasDiff:  hasDiff,
+			})
+		}
+	}
+
+	return orphans, nil
+}
+
+// CleanupOrphanedDoltBranches processes orphaned polecat branches:
+//   - Branches with diffs: merged to main first (preserving any data), then deleted
+//   - Branches without diffs: deleted directly
+//
+// Returns counts of merged and deleted branches, plus any errors encountered.
+func CleanupOrphanedDoltBranches(townRoot string, orphans []OrphanedDoltBranch) (merged, deleted int, errs []error) {
+	for _, o := range orphans {
+		if o.HasDiff {
+			// Merge to main first to preserve data.
+			if err := MergePolecatBranch(townRoot, o.Database, o.Branch); err != nil {
+				errs = append(errs, fmt.Errorf("merging %s/%s: %w", o.Database, o.Branch, err))
+				continue
+			}
+			merged++
+			// MergePolecatBranch already deletes the branch after merge.
+		} else {
+			// No diff — safe to delete directly.
+			DeletePolecatBranch(townRoot, o.Database, o.Branch)
+			deleted++
+		}
+	}
+	return merged, deleted, errs
 }

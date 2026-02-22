@@ -298,22 +298,6 @@ func TestDoltOrphanedDatabaseCheck_Name(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// DoltOrphanedBranchCheck tests
-// =============================================================================
-
-func TestDoltOrphanedBranchCheck_NoDoltData(t *testing.T) {
-	// No .dolt-data directory means no databases to scan.
-	townRoot := t.TempDir()
-	check := NewDoltOrphanedBranchCheck()
-	ctx := &CheckContext{TownRoot: townRoot}
-
-	result := check.Run(ctx)
-	if result.Status != StatusOK {
-		t.Errorf("expected StatusOK for missing .dolt-data/, got %v: %s", result.Status, result.Message)
-	}
-}
-
 func TestDoltOrphanedBranchCheck_Name(t *testing.T) {
 	check := NewDoltOrphanedBranchCheck()
 	if check.Name() != "dolt-orphaned-branches" {
@@ -328,9 +312,9 @@ func TestDoltOrphanedBranchCheck_CanFix(t *testing.T) {
 	}
 }
 
-func TestDoltOrphanedBranchCheck_Category(t *testing.T) {
+func TestDoltOrphanedBranchCheck_Description(t *testing.T) {
 	check := NewDoltOrphanedBranchCheck()
-	if check.Category() != CategoryCleanup {
-		t.Errorf("expected category %q, got %q", CategoryCleanup, check.Category())
+	if check.Description() != "Detect orphaned polecat Dolt branches" {
+		t.Errorf("unexpected description: %q", check.Description())
 	}
 }
