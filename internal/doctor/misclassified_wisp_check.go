@@ -221,8 +221,16 @@ func (c *CheckMisclassifiedWisps) shouldBeWisp(id, title, issueType string, labe
 		return "merge-request type should be ephemeral"
 	}
 
-	// Check for patrol-related labels
+	// Check for agent type - agent operational state has no git history consumers
+	if issueType == "agent" {
+		return "agent type should be ephemeral"
+	}
+
+	// Check for patrol-related labels and agent labels
 	for _, label := range labels {
+		if label == "gt:agent" {
+			return "agent label indicates ephemeral operational state"
+		}
 		if strings.Contains(label, "patrol") {
 			return "patrol label indicates ephemeral workflow"
 		}

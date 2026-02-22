@@ -185,6 +185,7 @@ func (b *Beads) CreateAgentBead(id, title string, fields *AgentFields) (*Issue, 
 		"--description=" + description,
 		"--type=agent",
 		"--labels=gt:agent",
+		"--ephemeral",
 	}
 	if NeedsForceForID(id) {
 		args = append(args, "--force")
@@ -300,9 +301,9 @@ func (b *Beads) CreateOrReopenAgentBead(id, title string, fields *AgentFields) (
 	if err := target.Update(id, updateOpts); err != nil {
 		return nil, fmt.Errorf("updating agent bead: %w", err)
 	}
-	// Fix type separately — UpdateOptions doesn't support type changes
-	if _, err := target.run("update", id, "--type=agent"); err != nil {
-		return nil, fmt.Errorf("fixing agent bead type: %w", err)
+	// Fix type and ephemeral flag separately — UpdateOptions doesn't support these
+	if _, err := target.run("update", id, "--type=agent", "--ephemeral"); err != nil {
+		return nil, fmt.Errorf("fixing agent bead type/ephemeral: %w", err)
 	}
 
 	// Note: role slot no longer set - role definitions are config-based
