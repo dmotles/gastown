@@ -800,6 +800,14 @@ const setupHTML = `<!DOCTYPE html>
     <script>
         var workspacePath = '';
 
+        // XSS protection: escape HTML entities in user-supplied strings
+        function escapeHtml(str) {
+            if (!str) return '';
+            var div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
         function showMode(mode) {
             document.getElementById('tab-existing').className = mode === 'existing' ? 'mode-tab active' : 'mode-tab';
             document.getElementById('tab-create').className = mode === 'create' ? 'mode-tab active' : 'mode-tab';
@@ -836,27 +844,31 @@ const setupHTML = `<!DOCTYPE html>
                 if (data.valid) {
                     var rigsHtml = '';
                     if (data.rigs && data.rigs.length > 0) {
-                        rigsHtml = '<div class="rigs">Rigs: ' + data.rigs.map(function(r) { return '<span>' + r + '</span>'; }).join('') + '</div>';
+                        rigsHtml = '<div class="rigs">Rigs: ' + data.rigs.map(function(r) { return '<span>' + escapeHtml(r) + '</span>'; }).join('') + '</div>';
                     } else {
                         rigsHtml = '<div class="rigs">No rigs configured yet</div>';
                     }
                     result.innerHTML = '<div class="workspace-info">' +
-                        '<div class="name">✓ ' + (data.name || 'Workspace') + '</div>' +
-                        '<div class="path">' + data.path + '</div>' +
+                        '<div class="name">✓ ' + escapeHtml(data.name || 'Workspace') + '</div>' +
+                        '<div class="path">' + escapeHtml(data.path) + '</div>' +
                         rigsHtml +
                         '</div>' +
                         '<div style="margin-top: 16px;">' +
-                        '<button class="btn btn-primary" id="launch-btn" onclick="launchDashboard(\'' + data.path.replace(/'/g, "\\'") + '\')">Launch Dashboard</button>' +
+                        '<button class="btn btn-primary" id="launch-btn">Launch Dashboard</button>' +
                         '</div>';
                     workspacePath = data.path;
+                    // Bind click via addEventListener to avoid inline onclick injection
+                    document.getElementById('launch-btn').addEventListener('click', function() {
+                        launchDashboard(data.path);
+                    });
                 } else {
-                    result.innerHTML = '<div class="status-message error">' + (data.message || 'Not a valid workspace') + '</div>';
+                    result.innerHTML = '<div class="status-message error">' + escapeHtml(data.message || 'Not a valid workspace') + '</div>';
                 }
             })
             .catch(function(err) {
                 btn.disabled = false;
                 btn.textContent = 'Check Workspace';
-                result.innerHTML = '<div class="status-message error">Error: ' + err.message + '</div>';
+                result.innerHTML = '<div class="status-message error">Error: ' + escapeHtml(err.message) + '</div>';
             });
         }
 
@@ -880,8 +892,8 @@ const setupHTML = `<!DOCTYPE html>
                         '<div style="font-size:1.5rem;color:#58a6ff;margin-bottom:16px;">🚚</div>' +
                         '<div style="font-size:1rem;color:#8b949e;">loading control center...</div>' +
                         '</div>';
-                    // Redirect to the new dashboard
-                    if (data.redirect) {
+                    // Redirect to the new dashboard (validate URL to prevent javascript: injection)
+                    if (data.redirect && data.redirect.indexOf('http') === 0) {
                         window.location.href = data.redirect;
                     } else {
                         window.location.reload();
