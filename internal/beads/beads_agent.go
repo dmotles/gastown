@@ -199,7 +199,23 @@ func (b *Beads) CreateAgentBead(id, title string, fields *AgentFields) (*Issue, 
 
 	out, err := b.run(args...)
 	if err != nil {
-		return nil, err
+		// Fallback: if ephemeral creation crashed (Dolt nil pointer dereference
+		// when wisps table doesn't exist — GH#1769), retry without --ephemeral
+		// to write to the issues table instead. The bead is functional either way;
+		// ephemeral is an optimization, not a requirement.
+		if isSubprocessCrash(err) {
+			style.PrintWarning("ephemeral create crashed for %s, retrying without --ephemeral", id)
+			var fallbackArgs []string
+			for _, a := range args {
+				if a != "--ephemeral" {
+					fallbackArgs = append(fallbackArgs, a)
+				}
+			}
+			out, err = b.run(fallbackArgs...)
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var issue Issue
