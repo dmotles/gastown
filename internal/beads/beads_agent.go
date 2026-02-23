@@ -199,7 +199,23 @@ func (b *Beads) CreateAgentBead(id, title string, fields *AgentFields) (*Issue, 
 
 	out, err := b.run(args...)
 	if err != nil {
-		return nil, err
+		// GH#1769: Dolt nil pointer dereference when wisps table is unavailable.
+		// When --ephemeral fails due to a Dolt panic (nil pointer, SIGSEGV) or
+		// wisps table not existing, retry without --ephemeral to fall back to
+		// the issues table. Agent beads in the issues table are functional —
+		// they just won't be excluded from git sync.
+		if isDoltOrWispError(err) {
+			nonEphArgs := make([]string, 0, len(args))
+			for _, a := range args {
+				if a != "--ephemeral" {
+					nonEphArgs = append(nonEphArgs, a)
+				}
+			}
+			out, err = b.run(nonEphArgs...)
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var issue Issue
@@ -664,6 +680,24 @@ func isAgentBeadByID(id string) bool {
 		}
 	}
 	return false
+}
+
+// isDoltOrWispError returns true if the error indicates a Dolt infrastructure
+// failure (nil pointer dereference, SIGSEGV, signal) or a wisps table issue
+// that would prevent --ephemeral from working. This is used to trigger fallback
+// to non-ephemeral creation. See GH#1769.
+func isDoltOrWispError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "nil pointer dereference") ||
+		strings.Contains(msg, "SIGSEGV") ||
+		strings.Contains(msg, "panic:") ||
+		strings.Contains(msg, "runtime error") ||
+		strings.Contains(msg, "signal:") ||
+		strings.Contains(msg, "wisps") ||
+		strings.Contains(msg, "DoltDB")
 }
 
 // ListWispIDs returns a set of all wisp IDs in the wisps table.
