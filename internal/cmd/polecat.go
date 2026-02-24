@@ -1243,16 +1243,54 @@ func nukePolecatFull(polecatName, rigName string, mgr *polecat.Manager, r *rig.R
 		} else {
 			repoGit = git.NewGit(filepath.Join(r.Path, "mayor", "rig"))
 		}
+
+		// Resolve branch SHA before deleting local branch (needed for merge check below)
+		branchSHA, _ := repoGit.Rev(branchToDelete)
+
 		if err := repoGit.DeleteBranch(branchToDelete, true); err != nil {
 			fmt.Printf("  %s branch delete: %v\n", style.Dim.Render("○"), err)
 		} else {
 			fmt.Printf("  %s deleted local branch %s\n", style.Success.Render("✓"), branchToDelete)
 		}
-		// Also delete remote branch if it exists
-		if err := repoGit.DeleteRemoteBranch("origin", branchToDelete); err != nil {
-			fmt.Printf("  %s remote branch delete: %v\n", style.Dim.Render("○"), err)
+
+		// Delete remote branch only if the branch has been merged to default branch
+		// or an MR bead exists (meaning refinery had a chance to process it).
+		// If gt done failed to create an MR bead and the branch isn't merged,
+		// the remote branch is the only copy of the work — preserve it.
+		// Race condition fix: witness nuke vs refinery merge (gt-lse).
+		safeToDeleteRemote := false
+
+		// Check if branch is merged into default branch
+		if branchSHA != "" {
+			defaultBranch := r.DefaultBranch()
+			// Fetch latest default branch state for accurate merge check
+			_ = repoGit.FetchBranch("origin", defaultBranch)
+			merged, mergeErr := repoGit.IsAncestor(branchSHA, "origin/"+defaultBranch)
+			if mergeErr == nil && merged {
+				safeToDeleteRemote = true
+			}
+		}
+
+		// If not merged, check if an MR bead exists (refinery was aware of the work)
+		if !safeToDeleteRemote {
+			bd := beads.New(r.Path)
+			mr, findErr := bd.FindMRForBranch(branchToDelete)
+			if findErr == nil && mr != nil {
+				// MR bead exists — refinery was aware. Safe to delete remote branch.
+				// (The MR was already rejected/closed in step 3.5 if it was open.)
+				safeToDeleteRemote = true
+			}
+		}
+
+		if safeToDeleteRemote {
+			if err := repoGit.DeleteRemoteBranch("origin", branchToDelete); err != nil {
+				fmt.Printf("  %s remote branch delete: %v\n", style.Dim.Render("○"), err)
+			} else {
+				fmt.Printf("  %s deleted remote branch %s\n", style.Success.Render("✓"), branchToDelete)
+			}
 		} else {
-			fmt.Printf("  %s deleted remote branch %s\n", style.Success.Render("✓"), branchToDelete)
+			fmt.Printf("  %s preserved remote branch %s (unmerged, no MR bead — work may be unprocessed)\n",
+				style.Warning.Render("⚠"), branchToDelete)
 		}
 	}
 
