@@ -162,6 +162,55 @@ func TestDoneBeadsInitBothCodePaths(t *testing.T) {
 	})
 }
 
+// TestDoneBeadsResolvesFromRigRoot verifies that gt done resolves beads from
+// the rig root (townRoot/rigName), NOT from the polecat worktree cwd (gt-xjq).
+// When a polecat worktree has no .beads/redirect, resolving from cwd fails with
+// "no beads database found". Resolving from the rig root always works because
+// the rig's .beads/ has either a database or a redirect to mayor/rig/.beads.
+func TestDoneBeadsResolvesFromRigRoot(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Simulate:
+	//   <town>/myrig/.beads/dolt/          <- rig-level beads with DB
+	//   <town>/myrig/polecats/fixer/myrig/ <- polecat worktree (NO .beads at all)
+	townRoot := tmpDir
+	rigName := "myrig"
+	rigRoot := filepath.Join(townRoot, rigName)
+	rigBeadsDir := filepath.Join(rigRoot, ".beads")
+	rigBeadsDolt := filepath.Join(rigBeadsDir, "dolt")
+	polecatWorktree := filepath.Join(rigRoot, "polecats", "fixer", rigName)
+
+	// Create rig .beads with dolt dir (indicates DB exists)
+	if err := os.MkdirAll(rigBeadsDolt, 0755); err != nil {
+		t.Fatalf("mkdir rig .beads/dolt: %v", err)
+	}
+	// Create polecat worktree WITHOUT .beads
+	if err := os.MkdirAll(polecatWorktree, 0755); err != nil {
+		t.Fatalf("mkdir polecat worktree: %v", err)
+	}
+
+	t.Run("rig root resolves to rig beads", func(t *testing.T) {
+		// This is what gt done now does (gt-xjq fix):
+		// resolvedBeadsDir := beads.ResolveBeadsDir(rigRoot)
+		resolved := beads.ResolveBeadsDir(rigRoot)
+		if resolved != rigBeadsDir {
+			t.Errorf("ResolveBeadsDir(rigRoot=%s) = %s, want %s", rigRoot, resolved, rigBeadsDir)
+		}
+	})
+
+	t.Run("polecat worktree without redirect falls back to local", func(t *testing.T) {
+		// Before the fix, gt done would resolve from cwd (the polecat worktree).
+		// Without .beads/redirect, this returns <worktree>/.beads which has no DB.
+		resolved := beads.ResolveBeadsDir(polecatWorktree)
+		expectedBroken := filepath.Join(polecatWorktree, ".beads")
+		if resolved != expectedBroken {
+			t.Errorf("ResolveBeadsDir(worktree=%s) = %s, want %s (broken path)", polecatWorktree, resolved, expectedBroken)
+		}
+		// This confirms why the old code was broken: resolving from worktree
+		// returns a non-existent path, while resolving from rigRoot works.
+	})
+}
+
 // TestDoneRedirectChain verifies behavior with chained redirects.
 // ResolveBeadsDir follows chains up to depth 3 as a safety net for legacy configs.
 // SetupRedirect avoids creating chains (bd CLI doesn't support them), but if

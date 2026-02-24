@@ -181,6 +181,12 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		return fmt.Errorf("cannot determine current rig (working directory may be deleted)")
 	}
 
+	// Resolve beads directory from rig root, NOT from polecat worktree (gt-xjq).
+	// Polecat worktrees may not have .beads/redirect set up, causing "no beads
+	// database found" errors. The rig root always has the authoritative .beads/.
+	rigRoot := filepath.Join(townRoot, rigName)
+	resolvedBeadsDir := beads.ResolveBeadsDir(rigRoot)
+
 	// When gt is invoked via shell alias (cd ~/gt && gt), or when Claude Code
 	// resets the shell CWD to mayor/rig, cwd is NOT the polecat's worktree.
 	// Detect and reconstruct actual path.
@@ -335,7 +341,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	// This handles cases where branch name doesn't contain issue ID
 	// (e.g., "polecat/furiosa-mkb0vq9f" doesn't have the actual issue).
 	if issueID == "" && agentBeadID != "" {
-		bd := beads.New(beads.ResolveBeadsDir(cwd))
+		bd := beads.New(resolvedBeadsDir)
 		if hookIssue := getIssueFromAgentHook(bd, agentBeadID); hookIssue != "" {
 			issueID = hookIssue
 		}
@@ -351,7 +357,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	// skip those stages to avoid repeating work or hitting errors.
 	checkpoints := map[DoneCheckpoint]string{}
 	if agentBeadID != "" {
-		bd := beads.New(beads.ResolveBeadsDir(cwd))
+		bd := beads.New(resolvedBeadsDir)
 		setDoneIntentLabel(bd, agentBeadID, exitType)
 		checkpoints = readDoneCheckpoints(bd, agentBeadID)
 		if len(checkpoints) > 0 {
@@ -436,7 +442,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			// Normally the Refinery closes after merge, but with no MR, nothing
 			// would ever close the issue.
 			if issueID != "" {
-				bd := beads.New(beads.ResolveBeadsDir(cwd))
+				bd := beads.New(resolvedBeadsDir)
 				closeReason := "Completed with no code changes (already fixed or pushed directly to main)"
 				// G15 fix: Force-close bypasses molecule dependency checks.
 				// The polecat is about to be nuked — open wisps should not block closure.
@@ -506,7 +512,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 
 			// Close the base issue — no MR/refinery will close it
 			if issueID != "" {
-				directBd := beads.New(beads.ResolveBeadsDir(cwd))
+				directBd := beads.New(resolvedBeadsDir)
 				closeReason := fmt.Sprintf("Direct merge to %s (convoy strategy)", defaultBranch)
 				var closeErr error
 				for attempt := 1; attempt <= 3; attempt++ {
@@ -558,8 +564,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			// git context may be broken. But the branch always exists in the bare repo
 			// (.repo.git) because worktree commits share the same object database.
 			style.PrintWarning("primary push failed: %v — trying bare repo fallback...", pushErr)
-			rigPath := filepath.Join(townRoot, rigName)
-			bareRepoPath := filepath.Join(rigPath, ".repo.git")
+			bareRepoPath := filepath.Join(rigRoot, ".repo.git")
 			if _, statErr := os.Stat(bareRepoPath); statErr == nil {
 				bareGit := git.NewGitWithDir(bareRepoPath, "")
 				pushErr = bareGit.Push("origin", refspec, false)
@@ -570,7 +575,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 				}
 			} else {
 				// No bare repo — try mayor/rig as last resort
-				mayorPath := filepath.Join(rigPath, "mayor", "rig")
+				mayorPath := filepath.Join(rigRoot, "mayor", "rig")
 				if _, statErr := os.Stat(mayorPath); statErr == nil {
 					mayorGit := git.NewGit(mayorPath)
 					pushErr = mayorGit.Push("origin", refspec, false)
@@ -600,8 +605,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		} else if !exists {
 			// Push "succeeded" but branch not on remote — try bare repo verification
 			// (worktree git may not see the pushed ref)
-			rigPath := filepath.Join(townRoot, rigName)
-			bareRepoPath := filepath.Join(rigPath, ".repo.git")
+			bareRepoPath := filepath.Join(rigRoot, ".repo.git")
 			if _, statErr := os.Stat(bareRepoPath); statErr == nil {
 				bareGit := git.NewGitWithDir(bareRepoPath, "")
 				exists, verifyErr = bareGit.RemoteBranchExists("origin", branch)
@@ -618,7 +622,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 
 		// Write push checkpoint for resume (gt-aufru)
 		if agentBeadID != "" {
-			cpBd := beads.New(beads.ResolveBeadsDir(cwd))
+			cpBd := beads.New(resolvedBeadsDir)
 			writeDoneCheckpoint(cpBd, agentBeadID, CheckpointPushed, branch)
 		}
 
@@ -629,7 +633,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		}
 
 		// Initialize beads
-		bd := beads.New(beads.ResolveBeadsDir(cwd))
+		bd := beads.New(resolvedBeadsDir)
 
 		// Check for no_merge flag - if set, skip merge queue and notify for review
 		sourceIssueForNoMerge, err := bd.Show(issueID)
@@ -817,7 +821,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 
 		// Write MR checkpoint for resume (gt-aufru)
 		if mrID != "" && agentBeadID != "" {
-			cpBd := beads.New(beads.ResolveBeadsDir(cwd))
+			cpBd := beads.New(resolvedBeadsDir)
 			writeDoneCheckpoint(cpBd, agentBeadID, CheckpointMRCreated, mrID)
 		}
 
@@ -914,7 +918,7 @@ notifyWitness:
 
 	// Write witness notification checkpoint for resume (gt-aufru)
 	if agentBeadID != "" {
-		cpBd := beads.New(beads.ResolveBeadsDir(cwd))
+		cpBd := beads.New(resolvedBeadsDir)
 		writeDoneCheckpoint(cpBd, agentBeadID, CheckpointWitnessNotified, "ok")
 	}
 
